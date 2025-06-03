@@ -1,66 +1,34 @@
-from datetime import datetime
 from fastapi import FastAPI, HTTPException
-from apscheduler.schedulers.background import BackgroundScheduler
+from fastapi.responses import JSONResponse
 from utils.trainer import train_and_save_model
-from utils.rekomender import load_matrices, generate_recommendations, get_fallback_recommendations
-import logging
+from utils.rekomender import load_data, get_recommendations
 import uvicorn
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# --- Inisialisasi Data ---
+# Load model saat startup
 try:
-    user_item_matrix, user_similarity_df = load_matrices()
+    user_item_matrix, user_similarity_df = load_data()
 except Exception as e:
-    logger.error(f"Startup error: {e}")
     user_item_matrix, user_similarity_df = None, None
+    print(f"Load model error: {e}")
 
-# --- Skedul Training ---
-scheduler = BackgroundScheduler()
-scheduler.add_job(
-    train_and_save_model,
-    'interval',
-    weeks=1,
-    next_run_time=datetime.now()  # Jalankan segera saat startup
-)
-scheduler.start()
-
-# --- Endpoint ---
 @app.get("/recommend")
-async def recommend(user_id: int):
-    try:
-        if user_item_matrix is None or user_similarity_df is None:
-            raise HTTPException(status_code=503, detail="Model belum siap")
-        
-        recommendations = generate_recommendations(
-            user_id, 
-            user_item_matrix, 
-            user_similarity_df
-        )
-        
-        if not recommendations:
-            recommendations = get_fallback_recommendations()
-            logger.info(f"Fallback untuk user {user_id}")
+def recommend(user_id: int):
+    if user_item_matrix is None or user_similarity_df is None:
+        raise HTTPException(status_code=500, detail="Model belum siap.")
 
-        return {
-            "user_id": user_id,
-            "recommendations": [
-                {"product_id": pid, "score": float(score)}
-                for pid, score in recommendations
-            ]
-        }
+    if user_id not in user_item_matrix.index:
+        raise HTTPException(status_code=404, detail=f"User ID {user_id} tidak ditemukan.")
 
-    except Exception as e:
-        logger.error(f"Recommendation error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    results = get_recommendations(user_id, user_item_matrix, user_similarity_df)
+    return {
+        "user_id": user_id,
+        "recommendations": [
+            {"product_id": pid, "score": round(score, 2)} for pid, score in results
+        ]
+    }
 
-@app.on_event("shutdown")
-def shutdown_event():
-    scheduler.shutdown()
-
+# Tambahkan uvicorn.run() agar bisa dijalankan langsung
 if __name__ == "__main__":
-    uvicorn.run("main:app", port=8000, log_level="info")
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
